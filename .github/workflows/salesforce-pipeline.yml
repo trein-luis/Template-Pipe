@@ -1,0 +1,117 @@
+
+# https://medium.com/@matt_robison/salesforce-ci-cd-devops-a-real-how-to-e9d7927e0c1d
+# https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_auth_key_and_cert.htm
+# https://github.com/amitastreait/github-actions
+
+name: Salesforce Deploy Pipeline
+
+on:
+  pull_request:
+    branches:
+      - qa
+      - main
+  push:
+    branches:
+      - qa
+      - main
+
+
+
+jobs:
+  validate-pr:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install --global @salesforce/cli
+
+      - name: Install Git Delta Plugin
+        run: echo y | sf plugins install sfdx-git-delta
+
+      - name: Get delta
+        run: |
+          sf sgd source delta --to "origin/${{ github.head_ref }}" --from "origin/${{ github.base_ref }}" --output-dir .
+
+      - name: Exibir conteúdo do package.xml
+        run: |
+          echo "Conteúdo do package.xml:"
+          cat package/package.xml
+
+      - name: Set Org Variables
+        run: |
+           if [ "${{ github.base_ref }}" == "main" ]; then
+            echo "SF_ORG_CLIENT_ID=${{ secrets.SF_PROD_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "SF_ORG_USERNAME=${{ secrets.SF_PROD_USERNAME }}" >> $GITHUB_ENV
+           else
+            echo "SF_ORG_CLIENT_ID=${{ secrets.SF_QA_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "SF_ORG_USERNAME=${{ secrets.SF_QA_USERNAME }}" >> $GITHUB_ENV
+           fi
+
+
+      - name: Authenticate Org
+        run: |
+          echo "${{ secrets.SFDX_JWT_KEY }}" > server.key
+          echo " Authenticating with client ID: $SF_ORG_CLIENT_ID"
+          sf org login jwt --client-id "$SF_ORG_CLIENT_ID" --jwt-key-file server.key --username "$SF_ORG_USERNAME"
+
+
+
+      - name: Validate Deploy
+        run: |
+            sf project deploy validate --manifest package/package.xml --target-org $SF_ORG_USERNAME --test-level RunLocalTests --verbose
+
+  deploy:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install --global @salesforce/cli
+
+      - name: Install Git Delta Plugin
+        run: echo y | sf plugins install sfdx-git-delta
+
+      - name: Get delta
+        run: sf sgd source delta --to "HEAD" --from "HEAD~1" --output-dir .
+
+      - name: Set Org Variables
+        run: |
+          if [ "${{ github.ref_name }}" == "main" ]; then
+            echo "SF_ORG_CLIENT_ID=${{ secrets.SF_PROD_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "SF_ORG_USERNAME=${{ secrets.SF_PROD_USERNAME }}" >> $GITHUB_ENV
+          else
+            echo "SF_ORG_CLIENT_ID=${{ secrets.SF_QA_CLIENT_ID }}" >> $GITHUB_ENV
+            echo "SF_ORG_USERNAME=${{ secrets.SF_QA_USERNAME }}" >> $GITHUB_ENV
+          fi
+
+      - name: Debug Secrets
+        run: |
+          echo " Client ID: [$SF_ORG_CLIENT_ID]"
+          echo " Username: [$SF_ORG_USERNAME]"
+          if [ -z "$SF_ORG_CLIENT_ID" ]; then
+            echo " O secret SF_QA_CLIENT_ID está vazio ou inacessível."
+            exit 1
+          fi
+
+
+      - name: Authenticate Org
+        run: |
+          echo "${{ secrets.SFDX_JWT_KEY }}" > server.key
+          echo "🔑 Authenticating with client ID: $SF_ORG_CLIENT_ID"
+          sf org login jwt --client-id "$SF_ORG_CLIENT_ID" --jwt-key-file server.key --username "$SF_ORG_USERNAME"
+
+
+      - name: Deploy to Org
+        run: sf project deploy start --manifest package/package.xml --post-destructive-changes destructiveChanges/destructiveChanges.xml --target-org $SF_ORG_USERNAME --ignore-warnings --test-level RunLocalTests
